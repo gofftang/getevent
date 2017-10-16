@@ -1,9 +1,9 @@
 CC = gcc
 STRIP = strip
 
-TARGET = getenv
+TARGET = getevent
 
-OBJS = getenv.o
+OBJS = getevent.o
 
 all : $(TARGET)
 
