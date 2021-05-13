@@ -14,6 +14,8 @@
 #include <linux/input.h>
 // #include <linux/eventpoll.h>
 
+#define MAX_NAME_LEN 256
+
 #define MAX_DEVICES 16
 #define MAX_MISC_FDS 16
 
@@ -27,10 +29,14 @@ typedef int(*ev_callback)(int, uint32_t, void*);
 
 struct fd_info {
     int fd;
-    char dev[256];
+    char dev[MAX_NAME_LEN];
     ev_callback cb;
     void *data;
 };
+
+static int capture_auto = 0;
+static int list_only = 0;
+static char capture_name[MAX_NAME_LEN] = {0};
 
 static int epollfd;
 static struct epoll_event polledevents[MAX_DEVICES + MAX_MISC_FDS];
@@ -59,18 +65,58 @@ static void signal_func(int sig_num)
     exit(0);
 }
 
+static void usage(const char* exec)
+{
+    printf("Usage: %s [-v/l/h] [-d device]\n"
+           "  -a Capture the events automallically\n"
+           "  -d Set a capture device\n"
+           "  -l List all available device\n"
+           "  -h See the usage\n"
+           "eg.:\n"
+           "  %s -a\n"
+           "  %s -l\n"
+           "  %s -d adc-keys\n",
+           exec, exec, exec, exec);
+}
+
 int main(int argc, char **argv)
 {
+    int opt;
     char *prog = argv[0];
+
+    while ((opt = getopt(argc, argv, "ald:h")) != -1) {
+        switch (opt) {
+        case 'a':
+            capture_auto = 1;
+            break;
+        case 'l':
+            list_only = 1;
+            break;
+        case 'd':
+            strncpy(capture_name, optarg, sizeof(capture_name));
+            break;
+        case 'h':
+        default:
+            usage(argv[0]);
+            return 0;
+        }
+    }
+
+    if (argc == 1) {
+        usage(argv[0]);
+        return 0;
+    }
 
     if (ev_init(input_callback) < 0)
         return -1;
 
     signal(SIGINT, signal_func);
     
-    for (;;) {
-        if (!ev_wait(-1))
-            ev_dispatch();
+    if (!list_only) {
+        for (;;) {
+            if (!ev_wait(-1))
+                ev_dispatch();
+        }
     }
 
     ev_exit();
@@ -99,6 +145,8 @@ static void show_event(const char* dev, struct input_event* ev)
 
     printf("%s : %s %4d %4d +%d.%dsec\n",
         dev, get_type_name(ev->type), ev->code, ev->value, secs, msecs);
+    if (ev->type == EV_SYN)
+        printf("\n");
 }
 
 static const char* get_type_name(__u16 type)
@@ -128,10 +176,16 @@ static int ev_init(ev_callback input_cb)
     char name[256];
     struct epoll_event ev;
     int epollctlfail = 0;
+    int count = 0;
+    int match = 0;
 
     epollfd = epoll_create(MAX_DEVICES + MAX_MISC_FDS);
     
     if (epollfd == -1) return -1;
+
+    if (list_only) {
+        printf("List devices:\n---\n");
+    }
 
     dir = opendir("/dev/input");
     if(dir != 0) {
@@ -166,7 +220,10 @@ static int ev_init(ev_callback input_cb)
             }
 
             if (ioctl(fd, EVIOCGNAME(sizeof(name)), name) >= 0) {
-                printf("Found %s\n", name);
+                if (capture_auto || list_only) {
+                    printf("%d. %s\n", count, name);
+                }
+                count++;
                 strncpy(ev_fdinfo[ev_count].dev, name, strlen(name));
             }
 
@@ -176,6 +233,12 @@ static int ev_init(ev_callback input_cb)
             ev_count++;
             ev_dev_count++;
             if(ev_dev_count == MAX_DEVICES) break;
+
+            if (capture_name[0] && strncmp(capture_name, name, MAX_NAME_LEN) == 0) {
+                printf("%s has match.\n", name);
+                match = 1;
+                break;
+            }
         }
     }
 
@@ -183,6 +246,13 @@ static int ev_init(ev_callback input_cb)
         close(epollfd);
         epollfd = -1;
         return -1;
+    }
+
+    if (capture_name[0] && match == 0) {
+        close(epollfd);
+        epollfd = -1;
+        printf("%s not match.\n", name);
+        return -2;
     }
 
     return 0;
